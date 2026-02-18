@@ -3,6 +3,7 @@
 
 ### QR Generator ###
 medias/*
+*.bat
 
 ### Linux ###
 *~
