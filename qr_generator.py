@@ -8,7 +8,7 @@ import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import qrcode
-from PIL import ImageTk
+from PIL import Image, ImageTk
 import os
 
 
@@ -21,10 +21,21 @@ TEXT      = "#f0f0f0"
 SUBTEXT   = "#888888"
 ENTRY_BG  = "#242424"
 BORDER    = "#2e2e2e"
-FONT_TITLE = ("Courier New", 22, "bold")
-FONT_LABEL = ("Courier New", 10)
-FONT_BTN   = ("Courier New", 11, "bold")
-FONT_SMALL = ("Courier New", 9)
+FONT_FAMILY = "Courier New"
+
+# ── Adaptation à l'écran ──────────────────────────────────────────
+# Toutes les tailles ci-dessous sont définies pour un écran de 720 px
+# de haut, puis multipliées par un facteur calculé selon l'écran réel.
+BASE_SCREEN_H = 720
+MIN_SCALE, MAX_SCALE = 0.85, 1.6
+
+LAYOUTS = {
+    "landscape": {"size": (920, 600), "min": (780, 560), "left_w": 440},
+    "portrait":  {"size": (520, 860), "min": (460, 700)},
+}
+
+# Rééchantillonnage de qualité pour l'aperçu (compatible Pillow ancien/récent)
+RESAMPLE = getattr(Image, "Resampling", Image).LANCZOS
 
 SUBTITLES = {
     "url":  "Transformez n'importe quelle URL en QR Code instantanément.",
@@ -42,117 +53,158 @@ class QRApp(tk.Tk):
         super().__init__()
         self.title("QR Generator")
         self.configure(bg=BG)
-        self.resizable(False, False)
-        self.geometry("520x820")
+        self.resizable(True, True)
+
+        self.ui_scale = self._compute_scale()
+        self.layout_mode = "landscape"     # "landscape" ou "portrait"
+        self.mode = "url"                  # "url" ou "wifi"
 
         self._qr_image = None       # PhotoImage (garde référence)
         self._last_pil  = None      # PIL Image pour la sauvegarde
-        self.mode = "url"
+        self._last_render_size = None
+        self._render_job = None
 
         self._build_ui()
         self._set_mode("url")
-        self._center()
+        self._apply_layout()
 
-    # ── Centrage fenêtre ─────────────────────────────────────────
-    def _center(self):
-        self.update_idletasks()
-        w, h = self.winfo_width(), self.winfo_height()
-        x = (self.winfo_screenwidth()  - w) // 2
-        y = (self.winfo_screenheight() - h) // 2
-        self.geometry(f"+{x}+{y}")
+    # ── Échelle / helpers de taille ──────────────────────────────
+    def _compute_scale(self):
+        s = self.winfo_screenheight() / BASE_SCREEN_H
+        return max(MIN_SCALE, min(s, MAX_SCALE))
+
+    def px(self, n):
+        """Convertit une taille de base en pixels réels."""
+        return int(round(n * self.ui_scale))
+
+    def font(self, size, bold=False):
+        s = max(8, int(round(size * self.ui_scale)))
+        return (FONT_FAMILY, s, "bold") if bold else (FONT_FAMILY, s)
 
     # ── Helpers UI ───────────────────────────────────────────────
     def _make_entry(self, parent, var, show=None, label=""):
         """Crée un champ de saisie stylé (label + entry). Retourne l'Entry."""
         if label:
-            tk.Label(parent, text=label, font=FONT_LABEL, fg=ACCENT, bg=BG).pack(
-                anchor="w", pady=(14, 4))
+            tk.Label(parent, text=label, font=self.font(10), fg=ACCENT, bg=BG).pack(
+                anchor="w", pady=(self.px(14), self.px(4)))
 
         border = tk.Frame(parent, bg=BORDER, bd=0)
         border.pack(fill="x")
         inner = tk.Frame(border, bg=ENTRY_BG)
         inner.pack(fill="x", padx=1, pady=1)
 
-        entry = tk.Entry(inner, textvariable=var, font=("Courier New", 12),
+        entry = tk.Entry(inner, textvariable=var, font=self.font(12),
                          fg=TEXT, bg=ENTRY_BG, insertbackground=ACCENT,
                          disabledbackground=CARD, disabledforeground=SUBTEXT,
-                         relief="flat", bd=10, show=show or "")
+                         relief="flat", bd=self.px(10), show=show or "")
         entry.pack(fill="x")
         entry.bind("<Return>", lambda e: self._generate())
         return entry
 
     # ── Construction UI ──────────────────────────────────────────
     def _build_ui(self):
-        # Titre
-        hdr = tk.Frame(self, bg=BG)
-        hdr.pack(fill="x", padx=30, pady=(30, 0))
+        self.main = tk.Frame(self, bg=BG)
+        self.main.pack(fill="both", expand=True)
 
-        tk.Label(hdr, text="QR", font=("Courier New", 28, "bold"),
+        # ══ Bloc saisie (gauche en paysage, haut en portrait) ════
+        self.input_col = tk.Frame(self.main, bg=BG)
+        self.input_pad = tk.Frame(self.input_col, bg=BG)
+        self.input_pad.pack(fill="both", expand=True)
+        p = self.input_pad
+
+        # Titre + bouton de changement d'affichage
+        hdr = tk.Frame(p, bg=BG)
+        hdr.pack(fill="x")
+
+        tk.Label(hdr, text="QR", font=self.font(28, True),
                  fg=ACCENT, bg=BG).pack(side="left")
-        tk.Label(hdr, text="GENERATOR", font=("Courier New", 28, "bold"),
+        tk.Label(hdr, text="GENERATOR", font=self.font(28, True),
                  fg=TEXT, bg=BG).pack(side="left", padx=(4, 0))
 
-        self.subtitle = tk.Label(self, text="", font=FONT_SMALL,
-                                 fg=SUBTEXT, bg=BG)
-        self.subtitle.pack(anchor="w", padx=30, pady=(4, 20))
+        self.layout_btn = tk.Button(hdr, text="", font=self.font(9),
+                                    fg=ACCENT, bg=CARD,
+                                    activeforeground=BG, activebackground=ACCENT,
+                                    relief="flat", bd=0,
+                                    padx=self.px(10), pady=self.px(4),
+                                    cursor="hand2", command=self._toggle_layout)
+        self.layout_btn.pack(side="right")
+
+        self.subtitle = tk.Label(p, text="", font=self.font(9),
+                                 fg=SUBTEXT, bg=BG, justify="left", wraplength=300)
+        self.subtitle.pack(anchor="w", pady=(4, self.px(20)))
+        # Le texte se réadapte à la largeur disponible
+        p.bind("<Configure>",
+               lambda e: self.subtitle.config(wraplength=max(100, e.width - 4)))
 
         # Séparateur
-        tk.Frame(self, height=1, bg=BORDER).pack(fill="x", padx=30)
+        tk.Frame(p, height=1, bg=BORDER).pack(fill="x")
 
         # Sélecteur de mode (onglets)
-        tabs = tk.Frame(self, bg=BG)
-        tabs.pack(fill="x", padx=30, pady=(16, 0))
+        tabs = tk.Frame(p, bg=BG)
+        tabs.pack(fill="x", pady=(self.px(16), 0))
 
-        self.tab_url = tk.Button(tabs, text="URL", font=FONT_LABEL,
-                                 relief="flat", bd=0, padx=16, pady=6,
+        self.tab_url = tk.Button(tabs, text="URL", font=self.font(10),
+                                 relief="flat", bd=0,
+                                 padx=self.px(16), pady=self.px(6),
                                  cursor="hand2",
                                  command=lambda: self._set_mode("url"))
         self.tab_url.pack(side="left")
 
-        self.tab_wifi = tk.Button(tabs, text="WI-FI", font=FONT_LABEL,
-                                  relief="flat", bd=0, padx=16, pady=6,
+        self.tab_wifi = tk.Button(tabs, text="WI-FI", font=self.font(10),
+                                  relief="flat", bd=0,
+                                  padx=self.px(16), pady=self.px(6),
                                   cursor="hand2",
                                   command=lambda: self._set_mode("wifi"))
         self.tab_wifi.pack(side="left", padx=(6, 0))
 
         # Conteneur des formulaires
-        self.form_container = tk.Frame(self, bg=BG)
-        self.form_container.pack(fill="x", padx=30)
+        self.form_container = tk.Frame(p, bg=BG)
+        self.form_container.pack(fill="x")
 
         self._build_url_form()
         self._build_wifi_form()
 
         # Bouton Générer
-        self.btn = tk.Button(self, text="GÉNÉRER  ›",
-                             font=FONT_BTN, fg=BG, bg=ACCENT,
+        self.btn = tk.Button(p, text="GÉNÉRER  ›",
+                             font=self.font(11, True), fg=BG, bg=ACCENT,
                              activebackground=ACCENT2, activeforeground=BG,
-                             relief="flat", bd=0, padx=20, pady=10,
+                             relief="flat", bd=0,
+                             padx=self.px(20), pady=self.px(10),
                              cursor="hand2", command=self._generate)
-        self.btn.pack(pady=(16, 0), padx=30, anchor="e")
+        self.btn.pack(pady=(self.px(16), 0), anchor="e")
 
-        # Zone aperçu
-        tk.Frame(self, height=1, bg=BORDER).pack(fill="x", padx=30, pady=(20, 0))
+        # ══ Séparateur entre les deux blocs ══════════════════════
+        self.sep = tk.Frame(self.main, bg=BORDER)
 
-        self.preview_frame = tk.Frame(self, bg=CARD, bd=0)
-        self.preview_frame.pack(fill="both", expand=True, padx=30, pady=20)
+        # ══ Bloc aperçu (droite en paysage, bas en portrait) ═════
+        self.preview_col = tk.Frame(self.main, bg=BG)
+        self.preview_pad = tk.Frame(self.preview_col, bg=BG)
+        self.preview_pad.pack(fill="both", expand=True)
+
+        self.preview_frame = tk.Frame(self.preview_pad, bg=CARD, bd=0)
+        self.preview_frame.pack(fill="both", expand=True, pady=(0, self.px(12)))
+        self.preview_frame.pack_propagate(False)   # taille dictée par la fenêtre
+        self.preview_frame.bind("<Configure>", self._schedule_render)
 
         self.placeholder = tk.Label(self.preview_frame,
                                     text="[ aperçu du QR Code ]",
-                                    font=FONT_SMALL, fg=SUBTEXT, bg=CARD)
+                                    font=self.font(9), fg=SUBTEXT, bg=CARD)
         self.placeholder.pack(expand=True)
 
-        self.qr_label = tk.Label(self.preview_frame, bg=CARD)
+        self.qr_label = tk.Label(self.preview_frame, bg=CARD,
+                                 padx=self.px(10), pady=self.px(10))
 
         # Statut + bouton sauvegarder
-        bottom = tk.Frame(self, bg=BG)
-        bottom.pack(fill="x", padx=30, pady=(0, 20))
+        bottom = tk.Frame(self.preview_pad, bg=BG)
+        bottom.pack(fill="x")
 
         self.status_var = tk.StringVar(value="")
         tk.Label(bottom, textvariable=self.status_var,
-                 font=FONT_SMALL, fg=SUBTEXT, bg=BG).pack(side="left")
+                 font=self.font(9), fg=SUBTEXT, bg=BG,
+                 justify="left", wraplength=self.px(260)).pack(side="left")
 
         self.save_btn = tk.Button(bottom, text="💾  SAUVEGARDER",
-                                  font=FONT_SMALL, fg=ACCENT, bg=BG,
+                                  font=self.font(9), fg=ACCENT, bg=BG,
                                   activeforeground=ACCENT2, activebackground=BG,
                                   relief="flat", bd=0, cursor="hand2",
                                   command=self._save)
@@ -180,14 +232,15 @@ class QRApp(tk.Tk):
         self.show_pwd_var = tk.BooleanVar(value=False)
         tk.Checkbutton(self.wifi_form, text="Afficher le mot de passe",
                        variable=self.show_pwd_var, command=self._toggle_pwd,
-                       font=FONT_SMALL, fg=SUBTEXT, bg=BG,
+                       font=self.font(9), fg=SUBTEXT, bg=BG,
                        activeforeground=TEXT, activebackground=BG,
                        selectcolor=ENTRY_BG, relief="flat", bd=0,
-                       highlightthickness=0, cursor="hand2").pack(anchor="w", pady=(6, 0))
+                       highlightthickness=0, cursor="hand2").pack(
+            anchor="w", pady=(self.px(6), 0))
 
         # Sécurité
-        tk.Label(self.wifi_form, text="SÉCURITÉ", font=FONT_LABEL,
-                 fg=ACCENT, bg=BG).pack(anchor="w", pady=(14, 4))
+        tk.Label(self.wifi_form, text="SÉCURITÉ", font=self.font(10),
+                 fg=ACCENT, bg=BG).pack(anchor="w", pady=(self.px(14), self.px(4)))
 
         sec_row = tk.Frame(self.wifi_form, bg=BG)
         sec_row.pack(fill="x")
@@ -196,21 +249,80 @@ class QRApp(tk.Tk):
         for text, value in [("WPA/WPA2/WPA3", "WPA"), ("WEP", "WEP"), ("Aucune", "nopass")]:
             tk.Radiobutton(sec_row, text=text, value=value,
                            variable=self.sec_var, command=self._on_security_change,
-                           font=FONT_SMALL, fg=TEXT, bg=BG,
+                           font=self.font(9), fg=TEXT, bg=BG,
                            activeforeground=ACCENT, activebackground=BG,
                            selectcolor=ENTRY_BG, relief="flat", bd=0,
-                           highlightthickness=0, cursor="hand2").pack(side="left", padx=(0, 14))
+                           highlightthickness=0, cursor="hand2").pack(
+                side="left", padx=(0, self.px(14)))
 
         # Réseau masqué
         self.hidden_var = tk.BooleanVar(value=False)
         tk.Checkbutton(self.wifi_form, text="Réseau masqué",
                        variable=self.hidden_var,
-                       font=FONT_SMALL, fg=TEXT, bg=BG,
+                       font=self.font(9), fg=TEXT, bg=BG,
                        activeforeground=ACCENT, activebackground=BG,
                        selectcolor=ENTRY_BG, relief="flat", bd=0,
-                       highlightthickness=0, cursor="hand2").pack(anchor="w", pady=(12, 0))
+                       highlightthickness=0, cursor="hand2").pack(
+            anchor="w", pady=(self.px(12), 0))
 
-    # ── Gestion des modes ────────────────────────────────────────
+    # ── Disposition paysage / portrait ───────────────────────────
+    def _toggle_layout(self):
+        self.layout_mode = "portrait" if self.layout_mode == "landscape" else "landscape"
+        self._apply_layout()
+
+    def _apply_layout(self):
+        lm = self.layout_mode
+        cfg = LAYOUTS[lm]
+        edge = self.px(30)
+        gap = self.px(24)
+
+        for w in (self.input_col, self.sep, self.preview_col):
+            w.pack_forget()
+
+        if lm == "landscape":
+            # Saisie à gauche (largeur fixe), aperçu à droite
+            self.input_col.config(width=self.px(cfg["left_w"]))
+            self.input_col.pack_propagate(False)
+            self.input_col.pack(side="left", fill="y")
+
+            self.sep.config(width=1, height=1)
+            self.sep.pack(side="left", fill="y", pady=edge)
+
+            self.preview_col.pack(side="left", fill="both", expand=True)
+
+            self.input_pad.pack_configure(padx=(edge, gap), pady=(edge, edge))
+            self.preview_pad.pack_configure(padx=(gap, edge), pady=(edge, edge))
+            self.layout_btn.config(text="⇄  PORTRAIT")
+        else:
+            # Saisie en haut, aperçu en bas
+            self.input_col.pack_propagate(True)
+            self.input_col.pack(side="top", fill="x")
+
+            self.sep.config(width=1, height=1)
+            self.sep.pack(side="top", fill="x", padx=edge)
+
+            self.preview_col.pack(side="top", fill="both", expand=True)
+
+            self.input_pad.pack_configure(padx=(edge, edge), pady=(edge, self.px(16)))
+            self.preview_pad.pack_configure(padx=(edge, edge), pady=(self.px(16), self.px(20)))
+            self.layout_btn.config(text="⇄  PAYSAGE")
+
+        # Taille de la fenêtre adaptée à l'écran, puis centrage
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        w = min(self.px(cfg["size"][0]), int(sw * 0.95))
+        h = min(self.px(cfg["size"][1]), int(sh * 0.90))
+        mw = min(self.px(cfg["min"][0]), w)
+        mh = min(self.px(cfg["min"][1]), h)
+        self.minsize(mw, mh)
+
+        x = (sw - w) // 2
+        y = max(0, (sh - h) // 2 - self.px(20))
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+        self._last_render_size = None
+        self._schedule_render()
+
+    # ── Gestion des modes URL / Wi-Fi ────────────────────────────
     def _set_mode(self, mode):
         self.mode = mode
         self.url_form.pack_forget()
@@ -243,6 +355,33 @@ class QRApp(tk.Tk):
             self.pwd_entry.config(state="disabled")
         else:
             self.pwd_entry.config(state="normal")
+
+    # ── Aperçu : taille adaptée à l'espace disponible ────────────
+    def _schedule_render(self, _event=None):
+        if self._render_job is not None:
+            self.after_cancel(self._render_job)
+        self._render_job = self.after(40, self._render_preview)
+
+    def _render_preview(self):
+        self._render_job = None
+        if self._last_pil is None:
+            return
+
+        w = self.preview_frame.winfo_width()
+        h = self.preview_frame.winfo_height()
+        if w <= 1 or h <= 1:
+            return
+
+        margin = self.px(20) * 2
+        size = max(self.px(120), min(w, h) - margin)
+
+        if size == self._last_render_size and self._qr_image is not None:
+            return
+        self._last_render_size = size
+
+        resized = self._last_pil.resize((size, size), RESAMPLE)
+        self._qr_image = ImageTk.PhotoImage(resized)
+        self.qr_label.config(image=self._qr_image)
 
     # ── Construction des données du QR ───────────────────────────
     def _build_payload(self):
@@ -302,15 +441,11 @@ class QRApp(tk.Tk):
             pil_img = qr.make_image(fill_color="#0f0f0f", back_color="#ffffff")
             self._last_pil = pil_img
 
-            # Redimensionne pour l'aperçu
-            size = 240
-            pil_img_resized = pil_img.resize((size, size))
-            self._qr_image = ImageTk.PhotoImage(pil_img_resized)
-
-            # Affiche
+            # Affiche (l'aperçu est redimensionné selon l'espace disponible)
             self.placeholder.pack_forget()
-            self.qr_label.config(image=self._qr_image, padx=10, pady=10)
             self.qr_label.pack(expand=True)
+            self._last_render_size = None
+            self._render_preview()
 
             # Sauvegarde automatique dans medias/
             os.makedirs("medias", exist_ok=True)
