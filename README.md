@@ -11,6 +11,8 @@ Petite application de bureau (Tkinter) pour générer des QR Codes à partir d'u
   - Type de sécurité : WPA/WPA2/WPA3, WEP ou aucune
   - Réseau masqué (optionnel)
 - Aperçu instantané dans la fenêtre.
+- **Affichage paysage ou portrait** : le bouton `⇄ PORTRAIT` / `⇄ PAYSAGE` en haut à droite permet de basculer entre les deux dispositions (saisie à gauche et QR Code à droite, ou l'un au-dessus de l'autre).
+- **Adaptation à l'écran** : la taille de la fenêtre, des polices et des marges s'ajuste automatiquement à la résolution de l'écran. La fenêtre est redimensionnable et l'aperçu du QR Code suit sa taille.
 - Sauvegarde automatique dans le dossier `medias/`, plus un bouton pour enregistrer ailleurs.
 
 ## Installation
