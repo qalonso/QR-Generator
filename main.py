@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-Générateur de QR Codes - Interface Tkinter
+Générateur de QR Codes - Interface Tkinter (URL + Wi-Fi)
 Installation : pip install -r requirements.txt
 """
 
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import qrcode
@@ -25,6 +26,16 @@ FONT_LABEL = ("Courier New", 10)
 FONT_BTN   = ("Courier New", 11, "bold")
 FONT_SMALL = ("Courier New", 9)
 
+SUBTITLES = {
+    "url":  "Transformez n'importe quelle URL en QR Code instantanément.",
+    "wifi": "Partagez votre Wi-Fi : scannez, et c'est connecté.",
+}
+
+
+def escape_wifi(value: str) -> str:
+    """Échappe les caractères spéciaux du format WIFI: (\\ ; , : ")."""
+    return re.sub(r'([\\;,:"])', r'\\\1', value)
+
 
 class QRApp(tk.Tk):
     def __init__(self):
@@ -32,12 +43,14 @@ class QRApp(tk.Tk):
         self.title("QR Generator")
         self.configure(bg=BG)
         self.resizable(False, False)
-        self.geometry("520x680")
+        self.geometry("520x820")
 
         self._qr_image = None       # PhotoImage (garde référence)
         self._last_pil  = None      # PIL Image pour la sauvegarde
+        self.mode = "url"
 
         self._build_ui()
+        self._set_mode("url")
         self._center()
 
     # ── Centrage fenêtre ─────────────────────────────────────────
@@ -47,6 +60,26 @@ class QRApp(tk.Tk):
         x = (self.winfo_screenwidth()  - w) // 2
         y = (self.winfo_screenheight() - h) // 2
         self.geometry(f"+{x}+{y}")
+
+    # ── Helpers UI ───────────────────────────────────────────────
+    def _make_entry(self, parent, var, show=None, label=""):
+        """Crée un champ de saisie stylé (label + entry). Retourne l'Entry."""
+        if label:
+            tk.Label(parent, text=label, font=FONT_LABEL, fg=ACCENT, bg=BG).pack(
+                anchor="w", pady=(14, 4))
+
+        border = tk.Frame(parent, bg=BORDER, bd=0)
+        border.pack(fill="x")
+        inner = tk.Frame(border, bg=ENTRY_BG)
+        inner.pack(fill="x", padx=1, pady=1)
+
+        entry = tk.Entry(inner, textvariable=var, font=("Courier New", 12),
+                         fg=TEXT, bg=ENTRY_BG, insertbackground=ACCENT,
+                         disabledbackground=CARD, disabledforeground=SUBTEXT,
+                         relief="flat", bd=10, show=show or "")
+        entry.pack(fill="x")
+        entry.bind("<Return>", lambda e: self._generate())
+        return entry
 
     # ── Construction UI ──────────────────────────────────────────
     def _build_ui(self):
@@ -59,30 +92,35 @@ class QRApp(tk.Tk):
         tk.Label(hdr, text="GENERATOR", font=("Courier New", 28, "bold"),
                  fg=TEXT, bg=BG).pack(side="left", padx=(4, 0))
 
-        tk.Label(self, text="Transformez n'importe quelle URL en QR Code instantanément.",
-                 font=FONT_SMALL, fg=SUBTEXT, bg=BG).pack(anchor="w", padx=30, pady=(4, 20))
+        self.subtitle = tk.Label(self, text="", font=FONT_SMALL,
+                                 fg=SUBTEXT, bg=BG)
+        self.subtitle.pack(anchor="w", padx=30, pady=(4, 20))
 
         # Séparateur
         tk.Frame(self, height=1, bg=BORDER).pack(fill="x", padx=30)
 
-        # Champ URL
-        tk.Label(self, text="URL", font=FONT_LABEL, fg=ACCENT, bg=BG).pack(
-            anchor="w", padx=30, pady=(20, 4))
+        # Sélecteur de mode (onglets)
+        tabs = tk.Frame(self, bg=BG)
+        tabs.pack(fill="x", padx=30, pady=(16, 0))
 
-        entry_frame = tk.Frame(self, bg=BORDER, bd=0)
-        entry_frame.pack(fill="x", padx=30)
+        self.tab_url = tk.Button(tabs, text="URL", font=FONT_LABEL,
+                                 relief="flat", bd=0, padx=16, pady=6,
+                                 cursor="hand2",
+                                 command=lambda: self._set_mode("url"))
+        self.tab_url.pack(side="left")
 
-        inner = tk.Frame(entry_frame, bg=ENTRY_BG)
-        inner.pack(fill="x", padx=1, pady=1)
+        self.tab_wifi = tk.Button(tabs, text="WI-FI", font=FONT_LABEL,
+                                  relief="flat", bd=0, padx=16, pady=6,
+                                  cursor="hand2",
+                                  command=lambda: self._set_mode("wifi"))
+        self.tab_wifi.pack(side="left", padx=(6, 0))
 
-        self.url_var = tk.StringVar()
-        self.url_entry = tk.Entry(inner, textvariable=self.url_var,
-                                  font=("Courier New", 12), fg=TEXT, bg=ENTRY_BG,
-                                  insertbackground=ACCENT, relief="flat",
-                                  bd=10)
-        self.url_entry.pack(fill="x")
-        self.url_entry.bind("<Return>", lambda e: self._generate())
-        self.url_entry.insert(0, "https://")
+        # Conteneur des formulaires
+        self.form_container = tk.Frame(self, bg=BG)
+        self.form_container.pack(fill="x", padx=30)
+
+        self._build_url_form()
+        self._build_wifi_form()
 
         # Bouton Générer
         self.btn = tk.Button(self, text="GÉNÉRER  ›",
@@ -120,15 +158,133 @@ class QRApp(tk.Tk):
                                   command=self._save)
         # Affiché seulement après génération
 
+    def _build_url_form(self):
+        self.url_form = tk.Frame(self.form_container, bg=BG)
+
+        self.url_var = tk.StringVar(value="https://")
+        self.url_entry = self._make_entry(self.url_form, self.url_var, label="URL")
+
+    def _build_wifi_form(self):
+        self.wifi_form = tk.Frame(self.form_container, bg=BG)
+
+        # SSID
+        self.ssid_var = tk.StringVar()
+        self.ssid_entry = self._make_entry(self.wifi_form, self.ssid_var,
+                                           label="NOM DU RÉSEAU (SSID)")
+
+        # Mot de passe
+        self.pwd_var = tk.StringVar()
+        self.pwd_entry = self._make_entry(self.wifi_form, self.pwd_var,
+                                          show="•", label="MOT DE PASSE")
+
+        self.show_pwd_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.wifi_form, text="Afficher le mot de passe",
+                       variable=self.show_pwd_var, command=self._toggle_pwd,
+                       font=FONT_SMALL, fg=SUBTEXT, bg=BG,
+                       activeforeground=TEXT, activebackground=BG,
+                       selectcolor=ENTRY_BG, relief="flat", bd=0,
+                       highlightthickness=0, cursor="hand2").pack(anchor="w", pady=(6, 0))
+
+        # Sécurité
+        tk.Label(self.wifi_form, text="SÉCURITÉ", font=FONT_LABEL,
+                 fg=ACCENT, bg=BG).pack(anchor="w", pady=(14, 4))
+
+        sec_row = tk.Frame(self.wifi_form, bg=BG)
+        sec_row.pack(fill="x")
+
+        self.sec_var = tk.StringVar(value="WPA")
+        for text, value in [("WPA/WPA2/WPA3", "WPA"), ("WEP", "WEP"), ("Aucune", "nopass")]:
+            tk.Radiobutton(sec_row, text=text, value=value,
+                           variable=self.sec_var, command=self._on_security_change,
+                           font=FONT_SMALL, fg=TEXT, bg=BG,
+                           activeforeground=ACCENT, activebackground=BG,
+                           selectcolor=ENTRY_BG, relief="flat", bd=0,
+                           highlightthickness=0, cursor="hand2").pack(side="left", padx=(0, 14))
+
+        # Réseau masqué
+        self.hidden_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.wifi_form, text="Réseau masqué",
+                       variable=self.hidden_var,
+                       font=FONT_SMALL, fg=TEXT, bg=BG,
+                       activeforeground=ACCENT, activebackground=BG,
+                       selectcolor=ENTRY_BG, relief="flat", bd=0,
+                       highlightthickness=0, cursor="hand2").pack(anchor="w", pady=(12, 0))
+
+    # ── Gestion des modes ────────────────────────────────────────
+    def _set_mode(self, mode):
+        self.mode = mode
+        self.url_form.pack_forget()
+        self.wifi_form.pack_forget()
+
+        if mode == "url":
+            self.url_form.pack(fill="x")
+            self.url_entry.focus_set()
+        else:
+            self.wifi_form.pack(fill="x")
+            self.ssid_entry.focus_set()
+
+        # Style des onglets
+        for btn, name in ((self.tab_url, "url"), (self.tab_wifi, "wifi")):
+            if name == mode:
+                btn.config(fg=BG, bg=ACCENT, activebackground=ACCENT,
+                           activeforeground=BG)
+            else:
+                btn.config(fg=SUBTEXT, bg=CARD, activebackground=CARD,
+                           activeforeground=TEXT)
+
+        self.subtitle.config(text=SUBTITLES[mode])
+
+    def _toggle_pwd(self):
+        self.pwd_entry.config(show="" if self.show_pwd_var.get() else "•")
+
+    def _on_security_change(self):
+        if self.sec_var.get() == "nopass":
+            self.pwd_var.set("")
+            self.pwd_entry.config(state="disabled")
+        else:
+            self.pwd_entry.config(state="normal")
+
+    # ── Construction des données du QR ───────────────────────────
+    def _build_payload(self):
+        """Retourne (données, nom_de_fichier_sûr) ou None si invalide."""
+        if self.mode == "url":
+            url = self.url_var.get().strip()
+            if not url or url == "https://":
+                return None
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = "https://" + url
+
+            safe = url.replace("https://", "").replace("http://", "")
+            safe = safe.replace("/", "_").replace(".", "_")
+            return url, safe
+
+        # Mode Wi-Fi
+        ssid = self.ssid_var.get()
+        security = self.sec_var.get()
+        password = self.pwd_var.get()
+
+        if not ssid.strip():
+            return None
+        if security != "nopass" and not password:
+            return None
+
+        data = f"WIFI:T:{security};S:{escape_wifi(ssid)};"
+        if security != "nopass":
+            data += f"P:{escape_wifi(password)};"
+        if self.hidden_var.get():
+            data += "H:true;"
+        data += ";"
+
+        safe = "wifi_" + re.sub(r"[^\w\-]+", "_", ssid)
+        return data, safe
+
     # ── Génération ───────────────────────────────────────────────
     def _generate(self):
-        url = self.url_var.get().strip()
-        if not url or url == "https://":
+        payload = self._build_payload()
+        if payload is None:
             self._shake()
             return
-
-        if not url.startswith("http://") and not url.startswith("https://"):
-            url = "https://" + url
+        data, safe_name = payload
 
         try:
             self.btn.config(text="...", state="disabled")
@@ -140,7 +296,7 @@ class QRApp(tk.Tk):
                 box_size=8,
                 border=3,
             )
-            qr.add_data(url)
+            qr.add_data(data)
             qr.make(fit=True)
 
             pil_img = qr.make_image(fill_color="#0f0f0f", back_color="#ffffff")
@@ -158,7 +314,6 @@ class QRApp(tk.Tk):
 
             # Sauvegarde automatique dans medias/
             os.makedirs("medias", exist_ok=True)
-            safe_name = url.replace("https://", "").replace("http://", "").replace("/", "_").replace(".", "_")
             auto_path = os.path.join("medias", f"qrcode_{safe_name[:50]}.png")
             pil_img.save(auto_path)
 
